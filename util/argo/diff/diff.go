@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -323,19 +325,27 @@ func StateDiffs(lives, configs []*unstructured.Unstructured, diffConfig DiffConf
 		diffOpts = append(diffOpts, diff.WithLogr(*diffConfig.Logger()))
 	}
 
+	var result *diff.DiffResultList
 	useCache, cachedDiff := diffConfig.DiffFromCache(diffConfig.AppName())
 	if useCache && cachedDiff != nil {
-		cached, err := diffArrayCached(normResults.Targets, normResults.Lives, cachedDiff, diffOpts...)
+		result, err = diffArrayCached(normResults.Targets, normResults.Lives, cachedDiff, diffOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate diff from cache: %w", err)
 		}
-		return cached, nil
+	} else {
+		result, err = diff.DiffArray(normResults.Targets, normResults.Lives, diffOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate diff: %w", err)
+		}
 	}
-	array, err := diff.DiffArray(normResults.Targets, normResults.Lives, diffOpts...)
+
+	// Post-diff processing: apply trackDifferences to detect extra fields from tracked managers
+	err = postDiffTrackChanges(result, normResults.Lives, normResults.Targets, diffConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to calculate diff: %w", err)
+		log.Warnf("failed to apply track differences post-processing: %v", err)
 	}
-	return array, nil
+
+	return result, nil
 }
 
 func diffArrayCached(configArray []*unstructured.Unstructured, liveArray []*unstructured.Unstructured, cachedDiff []*v1alpha1.ResourceDiff, opts ...diff.Option) (*diff.DiffResultList, error) {
@@ -452,4 +462,73 @@ func safeDeepCopy(obj *unstructured.Unstructured) *unstructured.Unstructured {
 		return nil
 	}
 	return obj.DeepCopy()
+}
+
+// postDiffTrackChanges applies trackDifferences post-processing to diff results.
+// For each resource that has tracked managers configured, it identifies fields in the
+// live state that are owned by those managers but NOT present in the desired (config) state.
+// These extra fields are removed from PredictedLive so they appear as diffs.
+func postDiffTrackChanges(result *diff.DiffResultList, lives, targets []*unstructured.Unstructured, diffConfig DiffConfig) error {
+	if result == nil {
+		return nil
+	}
+	tdc := NewTrackDiffConfig(diffConfig.Overrides())
+
+	for i := range result.Diffs {
+		target := targets[i]
+		live := lives[i]
+		if target == nil || live == nil {
+			continue
+		}
+
+		gvk := target.GetObjectKind().GroupVersionKind()
+		ok, trackDiff := tdc.HasTrackDifference(gvk.Group, gvk.Kind, target.GetName(), target.GetNamespace())
+		if !ok || len(trackDiff.ManagedFieldsManagers) == 0 {
+			continue
+		}
+
+		pt := scheme.ResolveParseableType(gvk, diffConfig.GVKParser())
+		if pt == nil {
+			log.Debugf("unable to resolve parseable type for %s, skipping track diff", gvk)
+			continue
+		}
+
+		extraFields, err := managedfields.FindTrackedExtraFields(live, target, trackDiff.ManagedFieldsManagers, pt)
+		if err != nil {
+			log.Warnf("error finding tracked extra fields for %s/%s: %v", target.GetNamespace(), target.GetName(), err)
+			continue
+		}
+		if extraFields.Empty() {
+			continue
+		}
+
+		// Remove extra tracked fields from PredictedLive to produce a visible diff
+		predictedLive := &unstructured.Unstructured{}
+		err = json.Unmarshal(result.Diffs[i].PredictedLive, &predictedLive.Object)
+		if err != nil {
+			log.Warnf("error unmarshaling predicted live for track diff: %v", err)
+			continue
+		}
+
+		typedPredicted, err := pt.FromUnstructured(predictedLive.Object)
+		if err != nil {
+			log.Warnf("error building typed predicted live for track diff: %v", err)
+			continue
+		}
+
+		cleanedPredicted := typedPredicted.RemoveItems(extraFields)
+		cleanedValue := cleanedPredicted.AsValue().Unstructured()
+		cleanedBytes, err := json.Marshal(cleanedValue)
+		if err != nil {
+			log.Warnf("error marshaling cleaned predicted live: %v", err)
+			continue
+		}
+
+		result.Diffs[i].PredictedLive = cleanedBytes
+		result.Diffs[i].Modified = !bytes.Equal(result.Diffs[i].NormalizedLive, result.Diffs[i].PredictedLive)
+		if result.Diffs[i].Modified {
+			result.Modified = true
+		}
+	}
+	return nil
 }
