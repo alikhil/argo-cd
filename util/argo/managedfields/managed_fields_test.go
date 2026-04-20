@@ -251,13 +251,15 @@ func TestFindTrackedExtraFields(t *testing.T) {
 	})
 
 	t.Run("will not report fields that exist in both tracked manager and config", func(t *testing.T) {
-		// The argocd manager manages labels like app.kubernetes.io/instance
-		// which is also present in the desired state. Those should NOT be reported
-		// as extra fields even if argocd is a tracked manager.
+		// The kubectl-edit manager owns only f:metadata.f:labels.f:manually-added-label
+		// which is NOT in the desired state. When we also track argocd, the argocd manager
+		// owns many fields that ARE in the desired state. The Difference operation
+		// should exclude fields that exist in both the tracked manager set AND the
+		// config field set.
 		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
 		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
-		// Track the argocd manager - it owns fields that are also in desired
-		trackedManagers := []string{"argocd"}
+		// Track only kubectl-edit - it owns only the manually-added label
+		trackedManagers := []string{"kubectl-edit"}
 		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
 
 		// when
@@ -266,9 +268,26 @@ func TestFindTrackedExtraFields(t *testing.T) {
 		// then
 		require.NoError(t, err)
 		require.NotNil(t, extraFields)
-		// argocd manager owns fields that are in the desired state, so
-		// the difference should be small or empty (only fields in live but not desired)
-		// The key test is that it doesn't report fields that are in BOTH config and manager
+		// kubectl-edit only owns f:metadata.f:labels.f:manually-added-label
+		// which is NOT in the desired state, so extraFields should be non-empty
+		assert.False(t, extraFields.Empty(), "kubectl-edit manager owns a field not in config")
+
+		// Now verify that when the tracked manager field IS in config, it's excluded
+		// Add the manually-added-label to the desired state
+		desiredWithLabel := desiredState.DeepCopy()
+		labels := desiredWithLabel.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels["manually-added-label"] = "manual-value"
+		desiredWithLabel.SetLabels(labels)
+
+		extraFieldsWithLabel, err := managedfields.FindTrackedExtraFields(liveState, desiredWithLabel, trackedManagers, &pt)
+		require.NoError(t, err)
+		require.NotNil(t, extraFieldsWithLabel)
+		// When the label IS in the desired state, the kubectl-edit manager's field
+		// should be excluded from the extra set
+		assert.True(t, extraFieldsWithLabel.Empty(), "expected no extra fields when tracked manager field is also in config")
 	})
 }
 
