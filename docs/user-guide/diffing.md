@@ -198,7 +198,7 @@ data:
 The following are well-known Kubernetes field manager names that may be useful to track:
 
 | Manager Name | Description |
-|---|---|
+| --- | --- |
 | `kubectl-edit` | Changes made via `kubectl edit` |
 | `kubectl-client-side-apply` | Changes made via `kubectl apply` (client-side) |
 | `kubectl-patch` | Changes made via `kubectl patch` |
