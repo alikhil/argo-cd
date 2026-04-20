@@ -1,10 +1,10 @@
 package diff
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/util/glob"
 )
 
 // TrackDiffConfig holds the track difference configurations defined in argocd-cm
@@ -30,25 +30,37 @@ func NewTrackDiffConfig(overrides map[string]v1alpha1.ResourceOverride) *TrackDi
 // HasTrackDifference will verify if the provided resource identifiers have any track
 // difference configurations associated with them. It checks system-level track difference
 // configurations for the current group/kind and wildcard overrides.
-func (t *TrackDiffConfig) HasTrackDifference(group, kind, name, namespace string) (bool, *TrackDifference) {
+// Supports glob patterns in the override keys (e.g. "apps/*", "*/Deployment").
+func (t *TrackDiffConfig) HasTrackDifference(group, kind string) (bool, *TrackDifference) {
 	result := &TrackDifference{}
 	found := false
 
-	ro, ok := t.overrides[fmt.Sprintf("%s/%s", group, kind)]
-	if ok && len(ro.TrackDifferences.ManagedFieldsManagers) > 0 {
-		mergeTrackDifferences(overrideToTrackDifference(ro), result)
-		found = true
-	}
-	wildOverride, ok := t.overrides["*/*"]
-	if ok && len(wildOverride.TrackDifferences.ManagedFieldsManagers) > 0 {
-		mergeTrackDifferences(overrideToTrackDifference(wildOverride), result)
-		found = true
+	for key, ro := range t.overrides {
+		if len(ro.TrackDifferences.ManagedFieldsManagers) == 0 {
+			continue
+		}
+		overrideGroup, overrideKind := splitGroupKind(key)
+		if glob.Match(overrideGroup, group) && glob.Match(overrideKind, kind) {
+			mergeTrackDifferences(overrideToTrackDifference(ro), result)
+			found = true
+		}
 	}
 
 	if !found {
 		return false, nil
 	}
 	return true, result
+}
+
+// splitGroupKind splits a "group/kind" key into its group and kind parts.
+// If no "/" is present, returns ("", key).
+func splitGroupKind(gk string) (string, string) {
+	for i := range gk {
+		if gk[i] == '/' {
+			return gk[:i], gk[i+1:]
+		}
+	}
+	return "", gk
 }
 
 func overrideToTrackDifference(override v1alpha1.ResourceOverride) *TrackDifference {

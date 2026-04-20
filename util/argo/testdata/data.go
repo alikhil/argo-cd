@@ -17,4 +17,7 @@ var (
 
 	//go:embed live_deployment_with_tracked_label.yaml
 	LiveDeploymentWithTrackedLabelYaml string
+
+	//go:embed live_deployment_with_multi_tracked_labels.yaml
+	LiveDeploymentWithMultiTrackedLabelsYaml string
 )

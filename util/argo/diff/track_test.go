@@ -28,7 +28,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.True(t, ok)
@@ -43,7 +43,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.True(t, ok)
@@ -68,7 +68,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.True(t, ok)
@@ -93,7 +93,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.True(t, ok)
@@ -108,7 +108,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("batch", "Job", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("batch", "Job")
 
 		// then
 		assert.False(t, ok)
@@ -120,7 +120,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(map[string]v1alpha1.ResourceOverride{})
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.False(t, ok)
@@ -139,7 +139,7 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(override)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.False(t, ok)
@@ -151,10 +151,94 @@ func TestTrackDiffConfig_HasTrackDifference(t *testing.T) {
 		trackConfig := diff.NewTrackDiffConfig(nil)
 
 		// when
-		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment", "app-name", "default")
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
 
 		// then
 		assert.False(t, ok)
 		assert.Nil(t, actual)
+	})
+
+	// Glob pattern tests
+	t.Run("will match with group glob pattern apps/*", func(t *testing.T) {
+		// given
+		override := map[string]v1alpha1.ResourceOverride{
+			"apps/*": {
+				TrackDifferences: v1alpha1.OverrideTrackDiff{
+					ManagedFieldsManagers: []string{"kubectl-edit"},
+				},
+			},
+		}
+		trackConfig := diff.NewTrackDiffConfig(override)
+
+		// when
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
+
+		// then
+		assert.True(t, ok)
+		require.NotNil(t, actual)
+		assert.Equal(t, []string{"kubectl-edit"}, actual.ManagedFieldsManagers)
+
+		// should also match StatefulSet in the same group
+		ok, actual = trackConfig.HasTrackDifference("apps", "StatefulSet")
+		assert.True(t, ok)
+		require.NotNil(t, actual)
+
+		// should not match a different group
+		ok, _ = trackConfig.HasTrackDifference("batch", "Job")
+		assert.False(t, ok)
+	})
+
+	t.Run("will match with kind glob pattern */Deployment", func(t *testing.T) {
+		// given
+		override := map[string]v1alpha1.ResourceOverride{
+			"*/Deployment": {
+				TrackDifferences: v1alpha1.OverrideTrackDiff{
+					ManagedFieldsManagers: []string{"kubectl-edit"},
+				},
+			},
+		}
+		trackConfig := diff.NewTrackDiffConfig(override)
+
+		// when
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
+
+		// then
+		assert.True(t, ok)
+		require.NotNil(t, actual)
+		assert.Equal(t, []string{"kubectl-edit"}, actual.ManagedFieldsManagers)
+
+		// should match Deployment in any group
+		ok, actual = trackConfig.HasTrackDifference("extensions", "Deployment")
+		assert.True(t, ok)
+		require.NotNil(t, actual)
+
+		// should not match other kinds
+		ok, _ = trackConfig.HasTrackDifference("apps", "StatefulSet")
+		assert.False(t, ok)
+	})
+
+	t.Run("will merge glob and exact matches", func(t *testing.T) {
+		// given
+		override := map[string]v1alpha1.ResourceOverride{
+			"apps/Deployment": {
+				TrackDifferences: v1alpha1.OverrideTrackDiff{
+					ManagedFieldsManagers: []string{"kubectl-edit"},
+				},
+			},
+			"apps/*": {
+				TrackDifferences: v1alpha1.OverrideTrackDiff{
+					ManagedFieldsManagers: []string{"kubectl-client-side-apply"},
+				},
+			},
+		}
+		trackConfig := diff.NewTrackDiffConfig(override)
+
+		// when
+		ok, actual := trackConfig.HasTrackDifference("apps", "Deployment")
+
+		// then - both should match and merge
+		assert.True(t, ok)
+		require.NotNil(t, actual)
+		assert.ElementsMatch(t, []string{"kubectl-edit", "kubectl-client-side-apply"}, actual.ManagedFieldsManagers)
 	})
 }

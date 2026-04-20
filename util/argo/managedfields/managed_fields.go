@@ -100,14 +100,12 @@ func FindTrackedExtraFields(live, config *unstructured.Unstructured, trackedMana
 	// Build typed values to get the field sets
 	typedConfig, err := pt.FromUnstructured(config.Object)
 	if err != nil {
-		log.Debugf("error creating typedConfig for track diff: %v", err)
-		return &fieldpath.Set{}, nil
+		return nil, fmt.Errorf("error creating typedConfig for track diff: %w", err)
 	}
 
 	configFieldSet, err := typedConfig.ToFieldSet()
 	if err != nil {
-		log.Debugf("error converting typedConfig to field set: %v", err)
-		return &fieldpath.Set{}, nil
+		return nil, fmt.Errorf("error converting typedConfig to field set: %w", err)
 	}
 
 	// Collect all fields owned by the tracked managers
@@ -115,8 +113,7 @@ func FindTrackedExtraFields(live, config *unstructured.Unstructured, trackedMana
 	for _, mf := range live.GetManagedFields() {
 		if slices.Contains(trackedManagers, mf.Manager) && mf.FieldsV1 != nil {
 			mfs := &fieldpath.Set{}
-			err := mfs.FromJSON(bytes.NewReader(mf.FieldsV1.Raw))
-			if err != nil {
+			if err := mfs.FromJSON(bytes.NewReader(mf.FieldsV1.Raw)); err != nil {
 				return nil, fmt.Errorf("error parsing managed fields for manager %s: %w", mf.Manager, err)
 			}
 			trackedManagerFields = trackedManagerFields.Union(mfs)

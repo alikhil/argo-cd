@@ -388,4 +388,85 @@ func TestStateDiffWithTrackDifferences(t *testing.T) {
 		_, hasManualLabel := labels["manually-added-label"]
 		assert.True(t, hasManualLabel, "manually-added label should remain since we're not tracking kubectl-edit")
 	})
+
+	t.Run("ignoreDifferences takes precedence over trackDifferences", func(t *testing.T) {
+		// given: both ignoreDifferences and trackDifferences configured.
+		// ignoreDifferences has a managedFieldsManager for "argocd" (which normalizes away
+		// conflicting fields), while trackDifferences tracks "kubectl-edit".
+		// The kubectl-edit label should still be detected even when ignore is active.
+		desiredState := testutil.YamlToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := testutil.YamlToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+
+		params := &diffConfigParams{
+			ignores: []v1alpha1.ResourceIgnoreDifferences{
+				{
+					Group:                 "*",
+					Kind:                  "*",
+					ManagedFieldsManagers: []string{"kube-controller-manager"},
+				},
+			},
+			overrides: map[string]v1alpha1.ResourceOverride{
+				"apps/Deployment": {
+					TrackDifferences: v1alpha1.OverrideTrackDiff{
+						ManagedFieldsManagers: []string{"kubectl-edit"},
+					},
+				},
+			},
+			ignoreRoles: true,
+		}
+		dc := makeDiffConfig(t, params)
+
+		// when
+		result, err := argo.StateDiff(liveState, desiredState, dc)
+
+		// then
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.True(t, result.Modified, "expected diff to show as modified with both ignore and track configured")
+
+		// Verify the predicted live does NOT contain the manually-added label
+		predicted := testutil.YamlToUnstructured(string(result.PredictedLive))
+		labels, _, _ := unstructured.NestedStringMap(predicted.Object, "metadata", "labels")
+		_, hasManualLabel := labels["manually-added-label"]
+		assert.False(t, hasManualLabel, "predicted live should not contain the manually-added label even with ignoreDifferences active")
+	})
+
+	t.Run("multi-manager end-to-end: two managers each with distinct extra fields", func(t *testing.T) {
+		// given: a live deployment with two tracked managers:
+		//   kubectl-edit owns f:metadata.f:labels.f:manually-added-label
+		//   kubectl-patch owns f:metadata.f:annotations.f:manual-annotation
+		desiredState := testutil.YamlToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := testutil.YamlToUnstructured(testdata.LiveDeploymentWithMultiTrackedLabelsYaml)
+
+		params := &diffConfigParams{
+			ignores: []v1alpha1.ResourceIgnoreDifferences{},
+			overrides: map[string]v1alpha1.ResourceOverride{
+				"apps/Deployment": {
+					TrackDifferences: v1alpha1.OverrideTrackDiff{
+						ManagedFieldsManagers: []string{"kubectl-edit", "kubectl-patch"},
+					},
+				},
+			},
+			ignoreRoles: true,
+		}
+		dc := makeDiffConfig(t, params)
+
+		// when
+		result, err := argo.StateDiff(liveState, desiredState, dc)
+
+		// then
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.True(t, result.Modified, "expected diff to show as modified when two tracked managers added fields")
+
+		// Verify neither the manually-added label nor the manual annotation appear in predicted live
+		predicted := testutil.YamlToUnstructured(string(result.PredictedLive))
+		labels, _, _ := unstructured.NestedStringMap(predicted.Object, "metadata", "labels")
+		_, hasManualLabel := labels["manually-added-label"]
+		assert.False(t, hasManualLabel, "predicted live should not contain the manually-added label from kubectl-edit")
+
+		annotations, _, _ := unstructured.NestedStringMap(predicted.Object, "metadata", "annotations")
+		_, hasManualAnnotation := annotations["manual-annotation"]
+		assert.False(t, hasManualAnnotation, "predicted live should not contain the manual-annotation from kubectl-patch")
+	})
 }
