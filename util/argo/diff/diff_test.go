@@ -2,6 +2,7 @@ package diff_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,7 @@ import (
 	argo "github.com/argoproj/argo-cd/v3/util/argo/diff"
 	"github.com/argoproj/argo-cd/v3/util/argo/normalizers"
 	"github.com/argoproj/argo-cd/v3/util/argo/testdata"
+	cacheutil "github.com/argoproj/argo-cd/v3/util/cache"
 	appstatecache "github.com/argoproj/argo-cd/v3/util/cache/appstate"
 )
 
@@ -468,5 +470,76 @@ func TestStateDiffWithTrackDifferences(t *testing.T) {
 		annotations, _, _ := unstructured.NestedStringMap(predicted.Object, "metadata", "annotations")
 		_, hasManualAnnotation := annotations["manual-annotation"]
 		assert.False(t, hasManualAnnotation, "predicted live should not contain the manual-annotation from kubectl-patch")
+	})
+
+	t.Run("cached-path: track diff still strips label from PredictedLive", func(t *testing.T) {
+		// given: a pre-populated cache with a ResourceDiff that matches the live resource's ResourceVersion
+		desiredState := testutil.YamlToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := testutil.YamlToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+
+		// Build a cached diff that mirrors the initial (no-track) diff result.
+		// The cache stores NormalizedLiveState and PredictedLiveState as JSON strings.
+		// We compute a baseline diff first (without track), then cache it.
+		baseParams := &diffConfigParams{
+			ignores:   []v1alpha1.ResourceIgnoreDifferences{},
+			overrides: map[string]v1alpha1.ResourceOverride{},
+		}
+		baseDC := makeDiffConfig(t, baseParams)
+		baseResult, err := argo.StateDiff(liveState, desiredState, baseDC)
+		require.NoError(t, err)
+
+		// Create an in-memory cache and populate it
+		stateCache := appstatecache.NewCache(
+			cacheutil.NewCache(cacheutil.NewInMemoryCache(1*time.Hour)),
+			1*time.Minute,
+		)
+		appName := "test-app"
+		cachedDiffs := []*v1alpha1.ResourceDiff{
+			{
+				Group:               "apps",
+				Kind:                "Deployment",
+				Namespace:           "default",
+				Name:                "kustomize-guestbook-ui",
+				NormalizedLiveState: string(baseResult.NormalizedLive),
+				PredictedLiveState:  string(baseResult.PredictedLive),
+				ResourceVersion:     liveState.GetResourceVersion(), // must match for cache hit
+				Modified:            baseResult.Modified,
+			},
+		}
+		err = stateCache.SetAppManagedResources(appName, cachedDiffs)
+		require.NoError(t, err)
+
+		// Build DiffConfig with cache (NOT WithNoCache) and trackDifferences
+		dc, err := argo.NewDiffConfigBuilder().
+			WithDiffSettings(
+				[]v1alpha1.ResourceIgnoreDifferences{},
+				map[string]v1alpha1.ResourceOverride{
+					"apps/Deployment": {
+						TrackDifferences: v1alpha1.OverrideTrackDiff{
+							ManagedFieldsManagers: []string{"kubectl-edit"},
+						},
+					},
+				},
+				true,
+				normalizers.IgnoreNormalizerOpts{},
+			).
+			WithTracking("", "").
+			WithCache(stateCache, appName).
+			Build()
+		require.NoError(t, err)
+
+		// when
+		result, err := argo.StateDiff(liveState, desiredState, dc)
+
+		// then
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.True(t, result.Modified, "expected diff to show as modified when tracked manager added a label (via cache)")
+
+		// Verify the predicted live does NOT contain the manually-added label
+		predicted := testutil.YamlToUnstructured(string(result.PredictedLive))
+		labels, _, _ := unstructured.NestedStringMap(predicted.Object, "metadata", "labels")
+		_, hasManualLabel := labels["manually-added-label"]
+		assert.False(t, hasManualLabel, "predicted live should not contain the manually-added label (cached path)")
 	})
 }

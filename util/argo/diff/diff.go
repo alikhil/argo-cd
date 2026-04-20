@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -468,8 +469,15 @@ func safeDeepCopy(obj *unstructured.Unstructured) *unstructured.Unstructured {
 // The originalLives parameter should be the pre-normalization live resources so that
 // managedFields are preserved even when ignoreDifferences.managedFieldsManagers has
 // been applied during preDiffNormalize.
+// NOTE: trackDifferences is not supported when server-side diff is enabled because
+// server-side diff relies on the API server's dry-run apply which does not use managedFields
+// in the same way. When server-side diff is enabled, this function is a no-op.
 func postDiffTrackChanges(result *diff.DiffResultList, originalLives, normLives, targets []*unstructured.Unstructured, diffConfig DiffConfig) {
 	if result == nil {
+		return
+	}
+	if diffConfig.ServerSideDiff() {
+		log.Debugf("postDiffTrackChanges: skipping because server-side diff is enabled (trackDifferences is not supported with server-side diff)")
 		return
 	}
 	if targets == nil || normLives == nil || originalLives == nil {
@@ -539,11 +547,18 @@ func postDiffTrackChanges(result *diff.DiffResultList, originalLives, normLives,
 
 		// Use structural comparison to avoid false positives from JSON serialization
 		// differences (key ordering, null vs empty, numeric encoding).
+		// If unmarshal fails, fall back to byte-level comparison so Modified is never stale.
 		var normalizedObj, predictedObj any
-		if err := json.Unmarshal(result.Diffs[i].NormalizedLive, &normalizedObj); err == nil {
-			if err := json.Unmarshal(result.Diffs[i].PredictedLive, &predictedObj); err == nil {
-				result.Diffs[i].Modified = !reflect.DeepEqual(normalizedObj, predictedObj)
-			}
+		if err := json.Unmarshal(result.Diffs[i].NormalizedLive, &normalizedObj); err != nil {
+			log.Debugf("postDiffTrackChanges: failed to unmarshal NormalizedLive for %s/%s, falling back to bytes.Equal: %v",
+				target.GetNamespace(), target.GetName(), err)
+			result.Diffs[i].Modified = !bytes.Equal(result.Diffs[i].NormalizedLive, result.Diffs[i].PredictedLive)
+		} else if err := json.Unmarshal(result.Diffs[i].PredictedLive, &predictedObj); err != nil {
+			log.Debugf("postDiffTrackChanges: failed to unmarshal PredictedLive for %s/%s, falling back to bytes.Equal: %v",
+				target.GetNamespace(), target.GetName(), err)
+			result.Diffs[i].Modified = !bytes.Equal(result.Diffs[i].NormalizedLive, result.Diffs[i].PredictedLive)
+		} else {
+			result.Diffs[i].Modified = !reflect.DeepEqual(normalizedObj, predictedObj)
 		}
 	}
 

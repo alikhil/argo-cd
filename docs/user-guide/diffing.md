@@ -206,6 +206,9 @@ The following are well-known Kubernetes field manager names that may be useful t
 > [!WARNING]
 > When a tracked manager's field causes `OutOfSync` and the user syncs, Argo CD will actively remove the manually-added field from the live resource, reverting it to match the desired state in Git.
 
+> [!WARNING]
+> `trackDifferences` is not supported when server-side diff is enabled. When server-side diff is active, the `trackDifferences` configuration is ignored because server-side diff relies on the API server's dry-run apply, which does not use `managedFields` in the same way.
+
 ### Interaction with ignoreDifferences
 
 If a field is covered by both `trackDifferences` and `ignoreDifferences`, the `ignoreDifferences` configuration takes precedence — the field will be ignored. This allows you to track changes from a manager broadly while still ignoring specific fields that are expected to differ.

@@ -313,3 +313,62 @@ func StrToUnstructured(jsonStr string) *unstructured.Unstructured {
 	}
 	return &unstructured.Unstructured{Object: obj}
 }
+
+func TestFindTrackedExtraFields_ErrorPaths(t *testing.T) {
+	parser := scheme.StaticParser()
+
+	t.Run("error when config does not match parseable type", func(t *testing.T) {
+		// given: a config with a completely wrong structure for Deployment type
+		// (e.g., passing a Service schema but using Deployment parseable type)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		// Create a config that has invalid fields for the Deployment schema
+		badConfig := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"metadata":   map[string]any{"name": "test", "namespace": "default"},
+			"spec": map[string]any{
+				// replicas should be an integer, not a map — this will cause
+				// pt.FromUnstructured to fail schema validation
+				"replicas": map[string]any{"invalid": true},
+			},
+		}}
+		trackedManagers := []string{"kubectl-edit"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		_, err := managedfields.FindTrackedExtraFields(liveState, badConfig, trackedManagers, &pt)
+
+		// then
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "error creating typedConfig for track diff")
+	})
+
+	t.Run("error when managed fields JSON is malformed", func(t *testing.T) {
+		// given: a live resource where the tracked manager's FieldsV1 contains
+		// malformed data that cannot be parsed by fieldpath.Set.FromJSON.
+		// We inject this via the raw object map, bypassing SetManagedFields validation.
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+
+		// Directly set managedFields with invalid fieldsV1 data in the raw map.
+		liveState.Object["metadata"].(map[string]any)["managedFields"] = []any{
+			map[string]any{
+				"manager":    "kubectl-edit",
+				"operation":  "Update",
+				"apiVersion": "apps/v1",
+				"fieldsType": "FieldsV1",
+				"fieldsV1":   "invalid",
+			},
+		}
+
+		trackedManagers := []string{"kubectl-edit"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		_, err := managedfields.FindTrackedExtraFields(liveState, desiredState, trackedManagers, &pt)
+
+		// then: The malformed fieldsV1 triggers a FromJSON parse error.
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "error parsing managed fields for manager kubectl-edit")
+	})
+}

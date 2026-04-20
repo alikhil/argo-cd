@@ -2,6 +2,7 @@ package diff
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v3/util/glob"
@@ -55,12 +56,11 @@ func (t *TrackDiffConfig) HasTrackDifference(group, kind string) (bool, *TrackDi
 // splitGroupKind splits a "group/kind" key into its group and kind parts.
 // If no "/" is present, returns ("", key).
 func splitGroupKind(gk string) (string, string) {
-	for i := range gk {
-		if gk[i] == '/' {
-			return gk[:i], gk[i+1:]
-		}
+	parts := strings.SplitN(gk, "/", 2)
+	if len(parts) == 1 {
+		return "", parts[0]
 	}
-	return "", gk
+	return parts[0], parts[1]
 }
 
 func overrideToTrackDifference(override v1alpha1.ResourceOverride) *TrackDifference {

@@ -1593,6 +1593,17 @@ message OverrideIgnoreDiff {
   repeated string managedFieldsManagers = 3;
 }
 
+// OverrideTrackDiff contains configurations for tracking differences made by specific
+// field managers. Fields mutated by the listed managers that are not present in the
+// desired state (from git) will be shown as diffs, causing the application to appear
+// OutOfSync.
+message OverrideTrackDiff {
+  // ManagedFieldsManagers is a list of field managers whose changes should be tracked.
+  // If a field in the live state was set by one of these managers and is not present
+  // in the desired state, it will be reported as a diff.
+  repeated string managedFieldsManagers = 1;
+}
+
 message PluginConfigMapRef {
   // Name of the ConfigMap
   optional string name = 1;
@@ -2210,6 +2221,10 @@ message ResourceOverride {
 
   // IgnoreResourceUpdates holds configuration for ignoring updates to specific resource fields.
   optional OverrideIgnoreDiff ignoreResourceUpdates = 6;
+
+  // TrackDifferences contains configuration for tracking differences made by specific field managers.
+  // Fields mutated by the listed managers that are not present in the desired state will be shown as diffs.
+  optional OverrideTrackDiff trackDifferences = 7;
 
   // KnownTypeFields lists fields for which unit conversions should be applied.
   repeated KnownTypeField knownTypeFields = 4;
