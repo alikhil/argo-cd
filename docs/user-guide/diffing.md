@@ -147,6 +147,72 @@ data:
     ignoreAggregatedRoles: true
 ```
 
+## Tracking Differences from Specific Field Managers
+
+By default, Argo CD does not show diffs for fields that exist in the live resource but not in the desired state (from Git). This means that manual changes made via `kubectl edit`, the Kubernetes dashboard, or other tools are invisible — the application remains `Synced` even though the live state differs from Git.
+
+The `trackDifferences` feature allows you to configure Argo CD to detect these manual changes by specifying which [Kubernetes field managers](https://kubernetes.io/docs/reference/using-api/server-side-apply/#field-management) should be tracked. When a tracked manager owns fields that are not present in the desired state, those fields will be shown as diffs, causing the application to appear `OutOfSync`.
+
+> [!NOTE]
+> This feature is the inverse of `ignoreDifferences.managedFieldsManagers`. While `ignoreDifferences` tells Argo CD to *ignore* changes from specific managers, `trackDifferences` tells Argo CD to *detect* changes from specific managers that add new fields not present in Git.
+
+### System-Level Configuration
+
+Track differences can be configured at the system level in the `argocd-cm` ConfigMap using the `resource.customizations` key.
+
+**Split key format (recommended):**
+
+```yaml
+data:
+  resource.customizations.trackDifferences.apps_Deployment: |
+    managedFieldsManagers:
+    - kubectl-edit
+    - kubectl-client-side-apply
+```
+
+**Monolithic format:**
+
+```yaml
+data:
+  resource.customizations: |
+    apps/Deployment:
+      trackDifferences: |
+        managedFieldsManagers:
+        - kubectl-edit
+        - kubectl-client-side-apply
+```
+
+**Wildcard (all resources):**
+
+To track changes from specific managers across all resource types:
+
+```yaml
+data:
+  resource.customizations.trackDifferences.all: |
+    managedFieldsManagers:
+    - kubectl-edit
+```
+
+### Common Field Manager Names
+
+The following are well-known Kubernetes field manager names that may be useful to track:
+
+| Manager Name | Description |
+| --- | --- |
+| `kubectl-edit` | Changes made via `kubectl edit` |
+| `kubectl-client-side-apply` | Changes made via `kubectl apply` (client-side) |
+| `kubectl-patch` | Changes made via `kubectl patch` |
+
+> [!WARNING]
+> When a tracked manager's field causes `OutOfSync` and the user syncs, Argo CD will actively remove the manually-added field from the live resource, reverting it to match the desired state in Git.
+
+> [!WARNING]
+> `trackDifferences` is not supported when server-side diff is enabled. When server-side diff is active, the `trackDifferences` configuration is ignored because server-side diff relies on the API server's dry-run apply, which does not use `managedFields` in the same way.
+
+### Interaction with ignoreDifferences
+
+If a field is covered by both `trackDifferences` and `ignoreDifferences`, the `ignoreDifferences` configuration takes precedence — the field will be ignored. This allows you to track changes from a manager broadly while still ignoring specific fields that are expected to differ.
+
 ## Known Kubernetes types in CRDs (Resource limits, Volume mounts etc)
 
 Some CRDs are re-using data structures defined in the Kubernetes source base and therefore inheriting custom

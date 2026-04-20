@@ -1,8 +1,11 @@
 package diff
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/go-logr/logr"
 	log "github.com/sirupsen/logrus"
@@ -323,19 +326,24 @@ func StateDiffs(lives, configs []*unstructured.Unstructured, diffConfig DiffConf
 		diffOpts = append(diffOpts, diff.WithLogr(*diffConfig.Logger()))
 	}
 
+	var result *diff.DiffResultList
 	useCache, cachedDiff := diffConfig.DiffFromCache(diffConfig.AppName())
 	if useCache && cachedDiff != nil {
-		cached, err := diffArrayCached(normResults.Targets, normResults.Lives, cachedDiff, diffOpts...)
+		result, err = diffArrayCached(normResults.Targets, normResults.Lives, cachedDiff, diffOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate diff from cache: %w", err)
 		}
-		return cached, nil
+	} else {
+		result, err = diff.DiffArray(normResults.Targets, normResults.Lives, diffOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate diff: %w", err)
+		}
 	}
-	array, err := diff.DiffArray(normResults.Targets, normResults.Lives, diffOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate diff: %w", err)
-	}
-	return array, nil
+
+	// Post-diff processing: apply trackDifferences to detect extra fields from tracked managers
+	postDiffTrackChanges(result, lives, normResults.Lives, normResults.Targets, diffConfig)
+
+	return result, nil
 }
 
 func diffArrayCached(configArray []*unstructured.Unstructured, liveArray []*unstructured.Unstructured, cachedDiff []*v1alpha1.ResourceDiff, opts ...diff.Option) (*diff.DiffResultList, error) {
@@ -452,4 +460,114 @@ func safeDeepCopy(obj *unstructured.Unstructured) *unstructured.Unstructured {
 		return nil
 	}
 	return obj.DeepCopy()
+}
+
+// postDiffTrackChanges applies trackDifferences post-processing to diff results.
+// For each resource that has tracked managers configured, it identifies fields in the
+// live state that are owned by those managers but NOT present in the desired (config) state.
+// These extra fields are removed from PredictedLive so they appear as diffs.
+// The originalLives parameter should be the pre-normalization live resources so that
+// managedFields are preserved even when ignoreDifferences.managedFieldsManagers has
+// been applied during preDiffNormalize.
+// NOTE: trackDifferences is not supported when server-side diff is enabled because
+// server-side diff relies on the API server's dry-run apply which does not use managedFields
+// in the same way. When server-side diff is enabled, this function is a no-op.
+func postDiffTrackChanges(result *diff.DiffResultList, originalLives, normLives, targets []*unstructured.Unstructured, diffConfig DiffConfig) {
+	if result == nil {
+		return
+	}
+	if diffConfig.ServerSideDiff() {
+		log.Debugf("postDiffTrackChanges: skipping because server-side diff is enabled (trackDifferences is not supported with server-side diff)")
+		return
+	}
+	if targets == nil || normLives == nil || originalLives == nil {
+		log.Debugf("postDiffTrackChanges: skipping because targets, normLives, or originalLives is nil")
+		return
+	}
+	if len(result.Diffs) != len(targets) || len(result.Diffs) != len(normLives) || len(result.Diffs) != len(originalLives) {
+		log.Debugf("postDiffTrackChanges: skipping because array lengths are mismatched (diffs=%d, targets=%d, normLives=%d, originalLives=%d)",
+			len(result.Diffs), len(targets), len(normLives), len(originalLives))
+		return
+	}
+
+	tdc := NewTrackDiffConfig(diffConfig.Overrides())
+
+	for i := range result.Diffs {
+		target := targets[i]
+		live := normLives[i]
+		if target == nil || live == nil {
+			continue
+		}
+
+		gvk := target.GetObjectKind().GroupVersionKind()
+		ok, trackDiff := tdc.HasTrackDifference(gvk.Group, gvk.Kind)
+		if !ok || len(trackDiff.ManagedFieldsManagers) == 0 {
+			continue
+		}
+
+		pt := scheme.ResolveParseableType(gvk, diffConfig.GVKParser())
+		if pt == nil {
+			log.Debugf("unable to resolve parseable type for %s, skipping track diff", gvk)
+			continue
+		}
+
+		// Use originalLives for managedFields lookup since preDiffNormalize may have
+		// stripped managedFields from normLives via the ignoreDifferences path.
+		extraFields, err := managedfields.FindTrackedExtraFields(originalLives[i], target, trackDiff.ManagedFieldsManagers, pt)
+		if err != nil {
+			log.Debugf("error finding tracked extra fields for %s/%s: %v", target.GetNamespace(), target.GetName(), err)
+			continue
+		}
+		if extraFields.Empty() {
+			continue
+		}
+
+		// Remove extra tracked fields from PredictedLive to produce a visible diff
+		predictedLive := &unstructured.Unstructured{}
+		if err := json.Unmarshal(result.Diffs[i].PredictedLive, &predictedLive.Object); err != nil {
+			log.Debugf("error unmarshaling predicted live for track diff: %v", err)
+			continue
+		}
+
+		typedPredicted, err := pt.FromUnstructured(predictedLive.Object)
+		if err != nil {
+			log.Debugf("error building typed predicted live for track diff: %v", err)
+			continue
+		}
+
+		cleanedPredicted := typedPredicted.RemoveItems(extraFields)
+		cleanedValue := cleanedPredicted.AsValue().Unstructured()
+		cleanedBytes, err := json.Marshal(cleanedValue)
+		if err != nil {
+			log.Debugf("error marshaling cleaned predicted live: %v", err)
+			continue
+		}
+
+		result.Diffs[i].PredictedLive = cleanedBytes
+
+		// Use structural comparison to avoid false positives from JSON serialization
+		// differences (key ordering, null vs empty, numeric encoding).
+		// If unmarshal fails, fall back to byte-level comparison so Modified is never stale.
+		var normalizedObj, predictedObj any
+		if err := json.Unmarshal(result.Diffs[i].NormalizedLive, &normalizedObj); err != nil {
+			log.Debugf("postDiffTrackChanges: failed to unmarshal NormalizedLive for %s/%s, falling back to bytes.Equal: %v",
+				target.GetNamespace(), target.GetName(), err)
+			result.Diffs[i].Modified = !bytes.Equal(result.Diffs[i].NormalizedLive, result.Diffs[i].PredictedLive)
+		} else if err := json.Unmarshal(result.Diffs[i].PredictedLive, &predictedObj); err != nil {
+			log.Debugf("postDiffTrackChanges: failed to unmarshal PredictedLive for %s/%s, falling back to bytes.Equal: %v",
+				target.GetNamespace(), target.GetName(), err)
+			result.Diffs[i].Modified = !bytes.Equal(result.Diffs[i].NormalizedLive, result.Diffs[i].PredictedLive)
+		} else {
+			result.Diffs[i].Modified = !reflect.DeepEqual(normalizedObj, predictedObj)
+		}
+	}
+
+	// Recompute result.Modified as the OR of all per-diff Modified flags.
+	result.Modified = false
+	for i := range result.Diffs {
+		if result.Diffs[i].Modified {
+			result.Modified = true
+			break
+		}
+	}
 }

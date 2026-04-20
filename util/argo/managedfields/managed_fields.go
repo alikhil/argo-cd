@@ -86,6 +86,49 @@ func normalize(mf metav1.ManagedFieldsEntry, tr *typedResults) error {
 	return nil
 }
 
+// FindTrackedExtraFields identifies fields in the live resource that are owned by
+// the specified tracked managers but are NOT present in the config (desired) resource.
+// These are fields that were added manually (e.g., via kubectl edit) and should be
+// shown as diffs, causing the application to appear OutOfSync.
+// Returns an empty set if no extra tracked fields are found.
+// It is a no-op if no trackedManagers is provided, or if live or config are nil.
+func FindTrackedExtraFields(live, config *unstructured.Unstructured, trackedManagers []string, pt *typed.ParseableType) (*fieldpath.Set, error) {
+	if len(trackedManagers) == 0 || live == nil || config == nil || pt == nil {
+		return &fieldpath.Set{}, nil
+	}
+
+	// Build typed values to get the field sets
+	typedConfig, err := pt.FromUnstructured(config.Object)
+	if err != nil {
+		return nil, fmt.Errorf("error creating typedConfig for track diff: %w", err)
+	}
+
+	configFieldSet, err := typedConfig.ToFieldSet()
+	if err != nil {
+		return nil, fmt.Errorf("error converting typedConfig to field set: %w", err)
+	}
+
+	// Collect all fields owned by the tracked managers
+	trackedManagerFields := &fieldpath.Set{}
+	for _, mf := range live.GetManagedFields() {
+		if slices.Contains(trackedManagers, mf.Manager) && mf.FieldsV1 != nil {
+			mfs := &fieldpath.Set{}
+			if err := mfs.FromJSON(bytes.NewReader(mf.FieldsV1.Raw)); err != nil {
+				return nil, fmt.Errorf("error parsing managed fields for manager %s: %w", mf.Manager, err)
+			}
+			trackedManagerFields = trackedManagerFields.Union(mfs)
+		}
+	}
+
+	if trackedManagerFields.Empty() {
+		return &fieldpath.Set{}, nil
+	}
+
+	// Find fields owned by tracked managers that are NOT in the config
+	extraFields := trackedManagerFields.Difference(configFieldSet)
+	return extraFields, nil
+}
+
 type typedResults struct {
 	live       *typed.TypedValue
 	config     *typed.TypedValue

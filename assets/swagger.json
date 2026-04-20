@@ -9229,6 +9229,19 @@
         }
       }
     },
+    "v1alpha1OverrideTrackDiff": {
+      "description": "OverrideTrackDiff contains configurations for tracking differences made by specific\nfield managers. Fields mutated by the listed managers that are not present in the\ndesired state (from git) will be shown as diffs, causing the application to appear\nOutOfSync.",
+      "type": "object",
+      "properties": {
+        "managedFieldsManagers": {
+          "description": "ManagedFieldsManagers is a list of field managers whose changes should be tracked.\nIf a field in the live state was set by one of these managers and is not present\nin the desired state, it will be reported as a diff.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "v1alpha1PluginConfigMapRef": {
       "type": "object",
       "properties": {
@@ -10112,6 +10125,9 @@
           "items": {
             "$ref": "#/definitions/v1alpha1KnownTypeField"
           }
+        },
+        "trackDifferences": {
+          "$ref": "#/definitions/v1alpha1OverrideTrackDiff"
         },
         "useOpenLibs": {
           "description": "UseOpenLibs indicates whether to use open-source libraries for the resource.",

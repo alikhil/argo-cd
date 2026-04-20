@@ -2524,12 +2524,24 @@ type OverrideIgnoreDiff struct {
 	ManagedFieldsManagers []string `json:"managedFieldsManagers" protobuf:"bytes,3,opt,name=managedFieldsManagers"`
 }
 
+// OverrideTrackDiff contains configurations for tracking differences made by specific
+// field managers. Fields mutated by the listed managers that are not present in the
+// desired state (from git) will be shown as diffs, causing the application to appear
+// OutOfSync.
+type OverrideTrackDiff struct {
+	// ManagedFieldsManagers is a list of field managers whose changes should be tracked.
+	// If a field in the live state was set by one of these managers and is not present
+	// in the desired state, it will be reported as a diff.
+	ManagedFieldsManagers []string `json:"managedFieldsManagers" protobuf:"bytes,1,opt,name=managedFieldsManagers"`
+}
+
 type rawResourceOverride struct {
 	HealthLua             string           `json:"health.lua,omitempty"`
 	UseOpenLibs           bool             `json:"health.lua.useOpenLibs,omitempty"`
 	Actions               string           `json:"actions,omitempty"`
 	IgnoreDifferences     string           `json:"ignoreDifferences,omitempty"`
 	IgnoreResourceUpdates string           `json:"ignoreResourceUpdates,omitempty"`
+	TrackDifferences      string           `json:"trackDifferences,omitempty"`
 	KnownTypeFields       []KnownTypeField `json:"knownTypeFields,omitempty"`
 }
 
@@ -2545,13 +2557,16 @@ type ResourceOverride struct {
 	IgnoreDifferences OverrideIgnoreDiff `protobuf:"bytes,2,opt,name=ignoreDifferences"`
 	// IgnoreResourceUpdates holds configuration for ignoring updates to specific resource fields.
 	IgnoreResourceUpdates OverrideIgnoreDiff `protobuf:"bytes,6,opt,name=ignoreResourceUpdates"`
+	// TrackDifferences contains configuration for tracking differences made by specific field managers.
+	// Fields mutated by the listed managers that are not present in the desired state will be shown as diffs.
+	TrackDifferences OverrideTrackDiff `protobuf:"bytes,7,opt,name=trackDifferences"`
 	// KnownTypeFields lists fields for which unit conversions should be applied.
 	KnownTypeFields []KnownTypeField `protobuf:"bytes,4,opt,name=knownTypeFields"`
 }
 
 // UnmarshalJSON unmarshals a JSON byte slice into a ResourceOverride object.
-// It parses the raw input data and handles special processing for `IgnoreDifferences`
-// and `IgnoreResourceUpdates` fields using YAML format.
+// It parses the raw input data and handles special processing for `IgnoreDifferences`,
+// `IgnoreResourceUpdates`, and `TrackDifferences` fields using YAML format.
 func (ro *ResourceOverride) UnmarshalJSON(data []byte) error {
 	raw := &rawResourceOverride{}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -2569,11 +2584,15 @@ func (ro *ResourceOverride) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	err = yaml.Unmarshal([]byte(raw.TrackDifferences), &ro.TrackDifferences)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 // MarshalJSON marshals a ResourceOverride object into a JSON byte slice.
-// It converts `IgnoreDifferences` and `IgnoreResourceUpdates` fields to YAML format before marshaling.
+// It converts `IgnoreDifferences`, `IgnoreResourceUpdates`, and `TrackDifferences` fields to YAML format before marshaling.
 func (ro ResourceOverride) MarshalJSON() ([]byte, error) {
 	ignoreDifferencesData, err := yaml.Marshal(ro.IgnoreDifferences)
 	if err != nil {
@@ -2583,7 +2602,11 @@ func (ro ResourceOverride) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw := &rawResourceOverride{ro.HealthLua, ro.UseOpenLibs, ro.Actions, string(ignoreDifferencesData), string(ignoreResourceUpdatesData), ro.KnownTypeFields}
+	trackDifferencesData, err := yaml.Marshal(ro.TrackDifferences)
+	if err != nil {
+		return nil, err
+	}
+	raw := &rawResourceOverride{ro.HealthLua, ro.UseOpenLibs, ro.Actions, string(ignoreDifferencesData), string(ignoreResourceUpdatesData), string(trackDifferencesData), ro.KnownTypeFields}
 	return json.Marshal(raw)
 }
 

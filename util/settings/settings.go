@@ -1124,6 +1124,13 @@ func (mgr *SettingsManager) appendResourceOverridesFromSplitKeys(cmData map[stri
 				return err
 			}
 			overrideVal.KnownTypeFields = knownTypeFields
+		case "trackDifferences":
+			overrideTrackDiff := v1alpha1.OverrideTrackDiff{}
+			err := yaml.Unmarshal([]byte(v), &overrideTrackDiff)
+			if err != nil {
+				return err
+			}
+			overrideVal.TrackDifferences = overrideTrackDiff
 		default:
 			return fmt.Errorf("resource customization type %s not supported", customizationType)
 		}
