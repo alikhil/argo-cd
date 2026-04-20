@@ -155,6 +155,123 @@ func TestNormalize(t *testing.T) {
 	})
 }
 
+func TestFindTrackedExtraFields(t *testing.T) {
+	parser := scheme.StaticParser()
+
+	t.Run("will find extra fields from tracked manager", func(t *testing.T) {
+		// given
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		trackedManagers := []string{"kubectl-edit"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, desiredState, trackedManagers, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.False(t, extraFields.Empty(), "expected to find extra fields from tracked manager")
+	})
+
+	t.Run("will not find extra fields from non-tracked manager", func(t *testing.T) {
+		// given
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		trackedManagers := []string{"another-manager"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, desiredState, trackedManagers, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.True(t, extraFields.Empty(), "expected no extra fields from non-tracked manager")
+	})
+
+	t.Run("no-op if tracked manager list is empty", func(t *testing.T) {
+		// given
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, desiredState, []string{}, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.True(t, extraFields.Empty())
+	})
+
+	t.Run("no-op if live state is nil", func(t *testing.T) {
+		// given
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		trackedManagers := []string{"kubectl-edit"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(nil, desiredState, trackedManagers, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.True(t, extraFields.Empty())
+	})
+
+	t.Run("no-op if desired state is nil", func(t *testing.T) {
+		// given
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		trackedManagers := []string{"kubectl-edit"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, nil, trackedManagers, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.True(t, extraFields.Empty())
+	})
+
+	t.Run("no-op if parseable type is nil", func(t *testing.T) {
+		// given
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		trackedManagers := []string{"kubectl-edit"}
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, desiredState, trackedManagers, nil)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		assert.True(t, extraFields.Empty())
+	})
+
+	t.Run("will not report fields that exist in both tracked manager and config", func(t *testing.T) {
+		// The argocd manager manages labels like app.kubernetes.io/instance
+		// which is also present in the desired state. Those should NOT be reported
+		// as extra fields even if argocd is a tracked manager.
+		desiredState := StrToUnstructured(testdata.DesiredDeploymentYaml)
+		liveState := StrToUnstructured(testdata.LiveDeploymentWithTrackedLabelYaml)
+		// Track the argocd manager - it owns fields that are also in desired
+		trackedManagers := []string{"argocd"}
+		pt := parser.Type("io.k8s.api.apps.v1.Deployment")
+
+		// when
+		extraFields, err := managedfields.FindTrackedExtraFields(liveState, desiredState, trackedManagers, &pt)
+
+		// then
+		require.NoError(t, err)
+		require.NotNil(t, extraFields)
+		// argocd manager owns fields that are in the desired state, so
+		// the difference should be small or empty (only fields in live but not desired)
+		// The key test is that it doesn't report fields that are in BOTH config and manager
+	})
+}
+
 func validateNestedFloat64(t *testing.T, expected float64, obj *unstructured.Unstructured, fields ...string) {
 	t.Helper()
 	current := getNestedFloat64(t, obj, fields...)

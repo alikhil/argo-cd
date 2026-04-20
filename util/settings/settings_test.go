@@ -558,6 +558,83 @@ func mergemaps(mapA map[string]string, mapB map[string]string) map[string]string
 	return mapB
 }
 
+func TestGetResourceOverrides_trackDifferences(t *testing.T) {
+	t.Run("MonolithicFormat", func(t *testing.T) {
+		_, settingsManager := fixtures(t.Context(), map[string]string{
+			"resource.compareoptions": `ignoreResourceStatusField: none`,
+			"resource.customizations": `
+    apps/Deployment:
+      trackDifferences: |
+        managedFieldsManagers:
+        - kubectl-edit
+        - kubectl-client-side-apply`,
+		})
+		overrides, err := settingsManager.GetResourceOverrides()
+		require.NoError(t, err)
+
+		deployOverride := overrides["apps/Deployment"]
+		assert.NotNil(t, deployOverride)
+		assert.Len(t, deployOverride.TrackDifferences.ManagedFieldsManagers, 2)
+		assert.Equal(t, "kubectl-edit", deployOverride.TrackDifferences.ManagedFieldsManagers[0])
+		assert.Equal(t, "kubectl-client-side-apply", deployOverride.TrackDifferences.ManagedFieldsManagers[1])
+	})
+
+	t.Run("SplitKeyFormat", func(t *testing.T) {
+		_, settingsManager := fixtures(t.Context(), map[string]string{
+			"resource.compareoptions": `ignoreResourceStatusField: none`,
+			"resource.customizations.trackDifferences.apps_Deployment": `managedFieldsManagers:
+- kubectl-edit`,
+		})
+		overrides, err := settingsManager.GetResourceOverrides()
+		require.NoError(t, err)
+
+		deployOverride := overrides["apps/Deployment"]
+		assert.NotNil(t, deployOverride)
+		assert.Len(t, deployOverride.TrackDifferences.ManagedFieldsManagers, 1)
+		assert.Equal(t, "kubectl-edit", deployOverride.TrackDifferences.ManagedFieldsManagers[0])
+	})
+
+	t.Run("WildcardSplitKeyFormat", func(t *testing.T) {
+		_, settingsManager := fixtures(t.Context(), map[string]string{
+			"resource.compareoptions": `ignoreResourceStatusField: none`,
+			"resource.customizations.trackDifferences.all": `managedFieldsManagers:
+- kubectl-edit
+- kubectl-client-side-apply`,
+		})
+		overrides, err := settingsManager.GetResourceOverrides()
+		require.NoError(t, err)
+
+		wildcardOverride := overrides["*/*"]
+		assert.NotNil(t, wildcardOverride)
+		assert.Len(t, wildcardOverride.TrackDifferences.ManagedFieldsManagers, 2)
+		assert.Equal(t, "kubectl-edit", wildcardOverride.TrackDifferences.ManagedFieldsManagers[0])
+		assert.Equal(t, "kubectl-client-side-apply", wildcardOverride.TrackDifferences.ManagedFieldsManagers[1])
+	})
+
+	t.Run("CombinedWithIgnoreDifferences", func(t *testing.T) {
+		_, settingsManager := fixtures(t.Context(), map[string]string{
+			"resource.compareoptions": `ignoreResourceStatusField: none`,
+			"resource.customizations": `
+    apps/Deployment:
+      ignoreDifferences: |
+        jsonPointers:
+        - /spec/replicas
+      trackDifferences: |
+        managedFieldsManagers:
+        - kubectl-edit`,
+		})
+		overrides, err := settingsManager.GetResourceOverrides()
+		require.NoError(t, err)
+
+		deployOverride := overrides["apps/Deployment"]
+		assert.NotNil(t, deployOverride)
+		assert.Len(t, deployOverride.IgnoreDifferences.JSONPointers, 1)
+		assert.Equal(t, "/spec/replicas", deployOverride.IgnoreDifferences.JSONPointers[0])
+		assert.Len(t, deployOverride.TrackDifferences.ManagedFieldsManagers, 1)
+		assert.Equal(t, "kubectl-edit", deployOverride.TrackDifferences.ManagedFieldsManagers[0])
+	})
+}
+
 func TestGetIgnoreResourceUpdatesOverrides(t *testing.T) {
 	allDefault := v1alpha1.ResourceOverride{IgnoreDifferences: v1alpha1.OverrideIgnoreDiff{
 		JSONPointers: []string{"/metadata/resourceVersion", "/metadata/generation", "/metadata/managedFields"},
